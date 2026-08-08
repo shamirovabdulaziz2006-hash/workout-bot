@@ -69,14 +69,18 @@ def init_db():
         CREATE TABLE IF NOT EXISTS nutrition_access (
             user_id BIGINT PRIMARY KEY,
             granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
             id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
             message TEXT NOT NULL,
             is_read BOOLEAN DEFAULT FALSE,
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS bot_users (
             user_id BIGINT PRIMARY KEY,
             username TEXT DEFAULT '',
@@ -88,6 +92,8 @@ def init_db():
         )
     """)
     # Добавляем новые колонки если их нет (для обратной совместимости)
+    # ИСПРАВЛЕНО: используем IF NOT EXISTS вместо try/except, который "отравлял"
+    # транзакцию и срывал commit() всех предыдущих CREATE TABLE
     for col, typ in [
         ("username", "TEXT DEFAULT ''"),
         ("first_name", "TEXT DEFAULT ''"),
@@ -95,10 +101,7 @@ def init_db():
         ("weight", "REAL DEFAULT 0"),
         ("height", "REAL DEFAULT 0"),
     ]:
-        try:
-            c.execute(f"ALTER TABLE bot_users ADD COLUMN {col} {typ}")
-        except Exception:
-            pass
+        c.execute(f"ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS {col} {typ}")
     conn.commit()
     conn.close()
 
@@ -713,7 +716,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "finish_workout":
         context.user_data.pop('workout_day', None)
         context.user_data.pop('workout_ex_idx', None)
-        await query.edit_message_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
+        try:
+            await query.edit_message_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
+        except Exception:
+            # Сообщение могло быть видео (caption), а не текстом — edit_message_text не сработает
+            await query.message.reply_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
 
     elif data == "broadcast":
         if not is_admin:
@@ -1192,7 +1199,10 @@ async def send_desc_prompt_to_message(message, context):
 async def send_exercise_to_query(query, context, user_id, day, idx):
     exercises = get_exercises_for_day(day)
     if idx >= len(exercises):
-        await query.edit_message_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
+        try:
+            await query.edit_message_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
+        except Exception:
+            await query.message.reply_text("🏁 Тренировка завершена! Отличная работа 💪", reply_markup=main_keyboard())
         return
     ex_id, ex_name, sets, reps, vid, desc = exercises[idx]
     last_weight = get_last_weight(user_id, ex_id)
