@@ -305,6 +305,40 @@ def get_last_weight(user_id, ex_id):
     conn.close()
     return row[0] if row else None
 
+def get_exercise_weights_for_user(user_id):
+    """
+    Список уникальных упражнений (по названию) с последним записанным весом.
+    Если одно и то же упражнение встречается в плане несколько раз в неделю
+    (в разных днях), оно показывается один раз, а вес берётся из самой
+    последней записи по любому из этих дней.
+    """
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        WITH ex_names AS (
+            SELECT exercise_name, MIN(id) AS first_id
+            FROM exercises
+            GROUP BY exercise_name
+        ),
+        latest_logs AS (
+            SELECT e.exercise_name, wl.weight, wl.logged_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.exercise_name
+                       ORDER BY wl.logged_at DESC
+                   ) AS rn
+            FROM workout_logs wl
+            JOIN exercises e ON wl.exercise_id = e.id
+            WHERE wl.user_id = %s
+        )
+        SELECT en.exercise_name, ll.weight, ll.logged_at
+        FROM ex_names en
+        LEFT JOIN latest_logs ll ON ll.exercise_name = en.exercise_name AND ll.rn = 1
+        ORDER BY en.first_id
+    """, (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
 def log_weight(user_id, ex_id, weight):
     conn = get_conn()
     c = conn.cursor()
@@ -440,6 +474,7 @@ def progress_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📸 Добавить фото + вес", callback_data="add_progress")],
         [InlineKeyboardButton("📈 История веса", callback_data="progress_weight_history")],
+        [InlineKeyboardButton("🏋️ Веса по упражнениям", callback_data="progress_exercise_weights")],
         [InlineKeyboardButton("🖼 Посмотреть фото", callback_data="progress_photos")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")],
     ])
@@ -888,6 +923,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"📅 {date} — {weight} кг\n"
         text += f"\n📊 Начало: {first_weight} кг\n📊 Сейчас: {last_weight} кг\n📊 Изменение: {diff_str} кг"
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=progress_keyboard())
+
+    elif data == "progress_exercise_weights":
+        rows = get_exercise_weights_for_user(user_id)
+        if not rows:
+            await query.edit_message_text(
+                "🏋️ План тренировок пуст — пока нечего показать.",
+                reply_markup=progress_keyboard()
+            )
+            return
+        text = "🏋️ *Веса по упражнениям:*\n\n"
+        for i, (exname, weight, logged_at) in enumerate(rows, start=1):
+            if weight:
+                date_str = logged_at.strftime('%d.%m.%Y') if hasattr(logged_at, 'strftime') else str(logged_at)[:10]
+                text += f"{i}. *{exname}* — ⚖️ {weight} кг ({date_str})\n"
+            else:
+                text += f"{i}. *{exname}* — вес ещё не записан\n"
+        await query.edit_message_text(text.strip(), parse_mode="Markdown", reply_markup=progress_keyboard())
 
     elif data == "progress_photos":
         history = get_progress_history(user_id)
