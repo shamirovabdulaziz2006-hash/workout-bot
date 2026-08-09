@@ -593,33 +593,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_user(user_id, user.username or '', user.first_name or '')
     context.user_data.clear()
 
-    if user_id == ADMIN_ID:
+    # /start всегда открывает обычную панель — даже для администратора.
+    # Панель администратора открывается только командой /admin.
+    if not has_plan():
         await update.message.reply_text(
-            "👋 Привет, тренер! Ты вошёл как администратор.\n\n"
-            "Здесь ты можешь управлять планом тренировок для всех пользователей.",
-            reply_markup=admin_keyboard()
+            "👋 Привет! Тренировочный план ещё не добавлен тренером.\n"
+            "Загляни позже! 💪"
+        )
+    elif not is_profile_complete(user_id):
+        context.user_data['state'] = 'onboarding_age'
+        name = user.first_name or "друг"
+        await update.message.reply_text(
+            f"👋 Привет, {name}! Рад видеть тебя!\n\n"
+            "Я твой персональный тренировочный бот 💪\n\n"
+            "Чтобы начать тренировки, мне нужно узнать тебя немного лучше.\n"
+            "Это займёт всего минуту!\n\n"
+            "Для начала — сколько тебе лет? 🎂"
         )
     else:
-        if not has_plan():
-            await update.message.reply_text(
-                "👋 Привет! Тренировочный план ещё не добавлен тренером.\n"
-                "Загляни позже! 💪"
-            )
-        elif not is_profile_complete(user_id):
-            context.user_data['state'] = 'onboarding_age'
-            name = user.first_name or "друг"
-            await update.message.reply_text(
-                f"👋 Привет, {name}! Рад видеть тебя!\n\n"
-                "Я твой персональный тренировочный бот 💪\n\n"
-                "Чтобы начать тренировки, мне нужно узнать тебя немного лучше.\n"
-                "Это займёт всего минуту!\n\n"
-                "Для начала — сколько тебе лет? 🎂"
-            )
-        else:
-            await update.message.reply_text(
-                f"👋 Привет! Выбери тренировку и вперёд 💪",
-                reply_markup=main_keyboard()
-            )
+        await update.message.reply_text(
+            f"👋 Привет! Выбери тренировку и вперёд 💪",
+            reply_markup=main_keyboard()
+        )
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
