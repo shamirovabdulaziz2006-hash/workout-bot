@@ -91,6 +91,17 @@ def init_db():
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_questions (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            exercise_id INTEGER,
+            exercise_name TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_read BOOLEAN DEFAULT FALSE,
+            asked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Добавляем новые колонки если их нет (для обратной совместимости)
     # ИСПРАВЛЕНО: используем IF NOT EXISTS вместо try/except, который "отравлял"
     # транзакцию и срывал commit() всех предыдущих CREATE TABLE
@@ -139,6 +150,50 @@ def save_feedback(user_id, message):
     c.execute("INSERT INTO feedback (user_id, message) VALUES (%s,%s)", (user_id, message))
     conn.commit()
     conn.close()
+
+def get_exercise_name(ex_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT exercise_name FROM exercises WHERE id=%s", (ex_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "Неизвестное упражнение"
+
+def save_exercise_question(user_id, exercise_id, exercise_name, message):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO exercise_questions (user_id, exercise_id, exercise_name, message) VALUES (%s,%s,%s,%s)",
+        (user_id, exercise_id, exercise_name, message)
+    )
+    conn.commit()
+    conn.close()
+
+def get_user_questions(user_id, limit=30):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT exercise_name, message, asked_at FROM exercise_questions "
+        "WHERE user_id=%s ORDER BY asked_at DESC LIMIT %s",
+        (user_id, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_all_exercise_questions(limit=30):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT q.id, q.user_id, q.exercise_name, q.message, q.is_read, q.asked_at, "
+        "b.first_name, b.username "
+        "FROM exercise_questions q LEFT JOIN bot_users b ON q.user_id = b.user_id "
+        "ORDER BY q.asked_at DESC LIMIT %s",
+        (limit,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 def has_nutrition_access(user_id):
     conn = get_conn()
@@ -451,6 +506,7 @@ def admin_keyboard():
     buttons.append([InlineKeyboardButton("🍽 Дать доступ к питанию", callback_data="admin_grant_nutrition")])
     buttons.append([InlineKeyboardButton("📨 Рассылка всем пользователям", callback_data="broadcast")])
     buttons.append([InlineKeyboardButton("💬 Сообщения от пользователей", callback_data="view_feedback")])
+    buttons.append([InlineKeyboardButton("❓ Вопросы по упражнениям", callback_data="view_exercise_questions")])
     return InlineKeyboardMarkup(buttons)
 
 def main_keyboard():
@@ -475,6 +531,7 @@ def progress_keyboard():
         [InlineKeyboardButton("📸 Добавить фото + вес", callback_data="add_progress")],
         [InlineKeyboardButton("📈 История веса", callback_data="progress_weight_history")],
         [InlineKeyboardButton("🏋️ Веса по упражнениям", callback_data="progress_exercise_weights")],
+        [InlineKeyboardButton("❓ Мои вопросы", callback_data="progress_my_questions")],
         [InlineKeyboardButton("🖼 Посмотреть фото", callback_data="progress_photos")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")],
     ])
@@ -502,6 +559,7 @@ def workout_keyboard(ex_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➡️ Следующее упражнение", callback_data=f"next_ex:{ex_id}")],
         [InlineKeyboardButton("⚖️ Записать вес", callback_data=f"log_weight:{ex_id}")],
+        [InlineKeyboardButton("❓ Вопрос по упражнению", callback_data=f"ask_question:{ex_id}")],
         [InlineKeyboardButton("🏁 Завершить тренировку", callback_data="finish_workout")],
     ])
 
@@ -748,6 +806,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['logging_weight_for'] = ex_id
         await query.message.reply_text("⚖️ Введи вес (кг), например: 60 или 62.5")
 
+    elif data.startswith("ask_question:"):
+        ex_id = int(data.split(":", 1)[1])
+        context.user_data['asking_question_for'] = ex_id
+        ex_name = get_exercise_name(ex_id)
+        await query.message.reply_text(
+            f"❓ Напиши вопрос или где болит по упражнению «{ex_name}»:"
+        )
+
     elif data == "finish_workout":
         context.user_data.pop('workout_day', None)
         context.user_data.pop('workout_ex_idx', None)
@@ -794,6 +860,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_conn()
         c = conn.cursor()
         c.execute("UPDATE feedback SET is_read=TRUE")
+        conn.commit()
+        conn.close()
+        await query.edit_message_text("✅ Всё прочитано.", reply_markup=admin_keyboard())
+
+    elif data == "view_exercise_questions":
+        if not is_admin:
+            return
+        rows = get_all_exercise_questions()
+        if not rows:
+            await query.edit_message_text("❓ Пока никто не задавал вопросов.", reply_markup=admin_keyboard())
+            return
+        text = "❓ *Вопросы по упражнениям:*\n\n"
+        for qid, quser_id, exname, msg, is_read, asked_at, fname, uname in rows:
+            name = fname or uname or str(quser_id)
+            date_str = asked_at.strftime('%d.%m %H:%M') if hasattr(asked_at, 'strftime') else str(asked_at)[:16]
+            status = "✅" if is_read else "🆕"
+            text += f"{status} *{name}* — 🏋️ *{exname}* ({date_str}):\n_{msg}_\n\n"
+        await query.edit_message_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Все прочитаны", callback_data="mark_all_questions_read")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")],
+            ])
+        )
+
+    elif data == "mark_all_questions_read":
+        if not is_admin:
+            return
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("UPDATE exercise_questions SET is_read=TRUE")
         conn.commit()
         conn.close()
         await query.edit_message_text("✅ Всё прочитано.", reply_markup=admin_keyboard())
@@ -941,6 +1038,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"{i}. *{exname}* — вес ещё не записан\n"
         await query.edit_message_text(text.strip(), parse_mode="Markdown", reply_markup=progress_keyboard())
 
+    elif data == "progress_my_questions":
+        rows = get_user_questions(user_id)
+        if not rows:
+            await query.edit_message_text(
+                "❓ Ты пока не задавал вопросов по упражнениям.",
+                reply_markup=progress_keyboard()
+            )
+            return
+        text = "❓ *Мои вопросы:*\n\n"
+        for exname, msg, asked_at in rows:
+            date_str = asked_at.strftime('%d.%m.%Y %H:%M') if hasattr(asked_at, 'strftime') else str(asked_at)[:16]
+            text += f"🏋️ *{exname}* ({date_str}):\n{msg}\n\n"
+        await query.edit_message_text(text.strip(), parse_mode="Markdown", reply_markup=progress_keyboard())
+
     elif data == "progress_photos":
         history = get_progress_history(user_id)
         photos = [(r[0], r[2], r[1], r[4]) for r in history if r[2]]
@@ -1031,6 +1142,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Вес {weight} кг записан!")
         except ValueError:
             await update.message.reply_text("❌ Введи число, например: 60")
+        return
+
+    if context.user_data.get('asking_question_for'):
+        text = update.message.text or ""
+        if not text.strip():
+            await update.message.reply_text("❌ Напиши текст вопроса.")
+            return
+        ex_id = context.user_data.pop('asking_question_for')
+        ex_name = get_exercise_name(ex_id)
+        save_exercise_question(user_id, ex_id, ex_name, text)
+        await update.message.reply_text("✅ Вопрос отправлен тренеру!")
+        user = update.effective_user
+        name = user.first_name or user.username or str(user_id)
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"❓ *Вопрос от {name} по упражнению «{ex_name}»:*\n\n{text}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
         return
 
     if state == 'admin_grant_nutrition' and is_admin:
