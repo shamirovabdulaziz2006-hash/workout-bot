@@ -490,12 +490,7 @@ def parse_plan(text):
 # ── Keyboards ──
 
 def admin_keyboard():
-    days = get_days()
     buttons = []
-    for day, wname in days:
-        buttons.append([InlineKeyboardButton(f"💪 {day} — {wname}", callback_data=f"start_workout:{day}")])
-    if days:
-        buttons.append([InlineKeyboardButton("📊 Мой прогресс", callback_data="progress_menu")])
     buttons.append([InlineKeyboardButton("─── ⚙️ Управление ───", callback_data="noop")])
     buttons.append([InlineKeyboardButton("📋 Загрузить план тренировок", callback_data="add_plan")])
     buttons.append([InlineKeyboardButton("🎥 Добавить видео упражнений", callback_data="add_videos")])
